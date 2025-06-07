@@ -149,7 +149,8 @@ const ConnectivityMeter = ({ score }) => {
 };
 
 const VocabularyCard = ({ vocab, rank }) => {
-  const score = calculateConnectivityScore(vocab);
+  // Use pre-calculated score (no redundant calculation)
+  const score = vocab.connectivityScore;
   const title = vocab.title || vocab['http://purl.org/dc/terms/title']?.[0]?.value || 'Untitled';
   const description = vocab.description || vocab['http://purl.org/dc/terms/description']?.[0]?.value || 'No description';
 
@@ -254,15 +255,22 @@ export default function App() {
         getDependencyData(vocabularyUris)
       ]);
 
-      // Step 3: Merge and rank
-      const enhancedResults = lovResults.map(result => ({
-        ...result,
-        ...connectivityData[result.uri],
-        ...dependencyData[result.uri]
-      }));
+      // Step 3: Merge data AND calculate scores once
+      const enhancedResults = lovResults.map(result => {
+        const mergedData = {
+          ...result,
+          ...connectivityData[result.uri],
+          ...dependencyData[result.uri]
+        };
+        
+        return {
+          ...mergedData,
+          connectivityScore: calculateConnectivityScore(mergedData) // Calculate once here
+        };
+      });
 
-      // Sort by connectivity score
-      enhancedResults.sort((a, b) => calculateConnectivityScore(b) - calculateConnectivityScore(a));
+      // Step 4: Sort using pre-calculated scores
+      enhancedResults.sort((a, b) => b.connectivityScore - a.connectivityScore);
       
       setSearchResults(enhancedResults);
 
