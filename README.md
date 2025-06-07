@@ -10,7 +10,7 @@ A simple web application that searches the Linked Open Vocabularies (LOV) and ra
 npm install && npm start
 ```
 
-That's it! The app will open in your browser at `http://localhost:3000`
+That's it! The app will open in your browser at `http://localhost:4000`
 
 ## 📖 What It Does
 
@@ -60,7 +60,7 @@ Search "metadata" and you'll see:
 # Install dependencies
 npm install
 
-# Start development server
+# Start development server (runs on port 4000)
 npm start
 
 # Build for production
