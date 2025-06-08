@@ -1,31 +1,45 @@
 import React, { useState } from 'react';
-import { Search, Network, GitBranch, Database, ExternalLink, Loader, Award, Info } from 'lucide-react';
+import { Search, Network, GitBranch, Database, ExternalLink, Loader, Award, Info, TrendingUp } from 'lucide-react';
 
 // LOV API endpoints
 const LOV_SEARCH_API = 'https://lov.linkeddata.es/dataset/lov/api/v2/vocabulary/search';
 const LOV_SPARQL_ENDPOINT = 'https://lov.linkeddata.es/dataset/lov/sparql';
 
-// Evidence-based connectivity scoring
-const calculateConnectivityScore = (vocab) => {
-  const designReuse = parseInt(vocab.reusedByVocabularies) || 0;
-  const designFoundation = vocab.dependencies?.length || 0;
-  const adoptionReach = parseInt(vocab.reusedByDatasets) || 0;
-  const adoptionIntensity = parseInt(vocab.occurrencesInDatasets) || 0;
+// Updated connectivity scoring with design and adoption convergence
+const calculateConnectivityScore = (adoptionData, designData) => {
+  // Adoption Convergence (Evidence of actual instantiation)
+  const reusedByVocabs = parseInt(adoptionData.reusedByVocabularies) || 0;
+  const reusedByDatasets = parseInt(adoptionData.reusedByDatasets) || 0;
+  const occurrences = parseInt(adoptionData.occurrencesInDatasets) || 0;
   
-  // Design Convergence (70% total weight)
+  // Design Convergence (Vocab-to-vocab connections)
+  const extendsCount = designData['extends'] || 0;
+  const hasEquivalences = designData.hasEquivalencesWith || 0;
+  const reliesOn = designData.reliesOn || 0;
+  const usedBy = designData.usedBy || 0;
+  const specializes = designData.specializes || 0;
+  const generalizes = designData.generalizes || 0;
+  
+  // Design Convergence Score - higher cardinality = more central
   const designConvergence = (
-    0.5 * Math.log(1 + designReuse) +           // 50% - Expert validation
-    0.2 * Math.log(1 + designFoundation)       // 20% - Foundation quality
+    Math.log(1 + extendsCount) +
+    Math.log(1 + hasEquivalences) +
+    Math.log(1 + reliesOn) +
+    Math.log(1 + usedBy) +
+    Math.log(1 + specializes) +
+    Math.log(1 + generalizes)
   );
-
-  // Adoption Convergence (20% total weight)
+  
+  // Adoption Convergence Score - evidence of data points instantiated
   const adoptionConvergence = (
-    0.15 * Math.log(1 + adoptionReach) +        // 15% - Dataset adoption
-    0.05 * Math.log(1 + adoptionIntensity / 1000) // 5% - Usage intensity
+    Math.log(1 + reusedByVocabs) +
+    Math.log(1 + reusedByDatasets) +
+    Math.log(1 + occurrences / 1000)
   );
-
-  const totalScore = designConvergence + adoptionConvergence;
-  return Math.min(1, totalScore / 8);
+  
+  // Combine scores (60% design convergence, 40% adoption convergence)
+  const totalScore = (0.6 * designConvergence) + (0.4 * adoptionConvergence);
+  return Math.min(1, totalScore / 15); // Normalize to 0-1
 };
 
 // SPARQL query execution
@@ -47,8 +61,8 @@ const executeSPARQLQuery = async (query) => {
   }
 };
 
-// Get connectivity data for vocabularies
-const getConnectivityData = async (vocabularyUris) => {
+// Get adoption convergence data for vocabularies
+const getAdoptionConvergenceData = async (vocabularyUris) => {
   if (!vocabularyUris.length) return {};
 
   const uriFilter = vocabularyUris.map(uri => `<${uri}>`).join(' ');
@@ -65,12 +79,12 @@ const getConnectivityData = async (vocabularyUris) => {
   `;
 
   const results = await executeSPARQLQuery(query);
-  const connectivityMap = {};
+  const adoptionMap = {};
 
   results.forEach(result => {
     const uri = result.vocab?.value;
     if (uri) {
-      connectivityMap[uri] = {
+      adoptionMap[uri] = {
         reusedByVocabularies: result.reusedByVocabs?.value || '0',
         reusedByDatasets: result.reusedByDatasets?.value || '0',
         occurrencesInDatasets: result.occurrences?.value || '0'
@@ -78,37 +92,55 @@ const getConnectivityData = async (vocabularyUris) => {
     }
   });
 
-  return connectivityMap;
+  return adoptionMap;
 };
 
-// Get dependency counts
-const getDependencyData = async (vocabularyUris) => {
+// Get design convergence data for vocabularies
+const getDesignConvergenceData = async (vocabularyUris) => {
   if (!vocabularyUris.length) return {};
 
   const uriFilter = vocabularyUris.map(uri => `<${uri}>`).join(' ');
   const query = `
     PREFIX voaf: <http://purl.org/vocommons/voaf#>
-    SELECT ?vocab (COUNT(?dependency) as ?depCount)
+    
+    SELECT ?vocab 
+           (COUNT(DISTINCT ?extends) as ?extendsCount)
+           (COUNT(DISTINCT ?hasEquiv) as ?hasEquivalencesCount) 
+           (COUNT(DISTINCT ?reliesOn) as ?reliesOnCount)
+           (COUNT(DISTINCT ?usedBy) as ?usedByCount)
+           (COUNT(DISTINCT ?specializes) as ?specializesCount)
+           (COUNT(DISTINCT ?generalizes) as ?generalizesCount)
     WHERE {
       VALUES ?vocab { ${uriFilter} }
-      OPTIONAL { ?vocab voaf:reliesOn ?dependency }
+      ?vocab a voaf:Vocabulary .
+      OPTIONAL { ?vocab voaf:extends ?extends }
+      OPTIONAL { ?vocab voaf:hasEquivalencesWith ?hasEquiv }
+      OPTIONAL { ?vocab voaf:reliesOn ?reliesOn }
+      OPTIONAL { ?vocab voaf:usedBy ?usedBy }
+      OPTIONAL { ?vocab voaf:specializes ?specializes }
+      OPTIONAL { ?vocab voaf:generalizes ?generalizes }
     }
     GROUP BY ?vocab
   `;
 
   const results = await executeSPARQLQuery(query);
-  const dependencyMap = {};
+  const designMap = {};
 
   results.forEach(result => {
     const uri = result.vocab?.value;
     if (uri) {
-      dependencyMap[uri] = {
-        dependencies: Array(parseInt(result.depCount?.value || '0')).fill(null)
+      designMap[uri] = {
+        'extends': parseInt(result.extendsCount?.value || '0'),
+        hasEquivalencesWith: parseInt(result.hasEquivalencesCount?.value || '0'),
+        reliesOn: parseInt(result.reliesOnCount?.value || '0'),
+        usedBy: parseInt(result.usedByCount?.value || '0'),
+        specializes: parseInt(result.specializesCount?.value || '0'),
+        generalizes: parseInt(result.generalizesCount?.value || '0')
       };
     }
   });
 
-  return dependencyMap;
+  return designMap;
 };
 
 // Search LOV API
@@ -149,7 +181,6 @@ const ConnectivityMeter = ({ score }) => {
 };
 
 const VocabularyCard = ({ vocab, rank }) => {
-  // Use pre-calculated score (no redundant calculation)
   const score = vocab.connectivityScore;
   const title = vocab.title || vocab['http://purl.org/dc/terms/title']?.[0]?.value || 'Untitled';
   const description = vocab.description || vocab['http://purl.org/dc/terms/description']?.[0]?.value || 'No description';
@@ -174,33 +205,28 @@ const VocabularyCard = ({ vocab, rank }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-4">
-        <div className="bg-gray-50 p-3 rounded-lg">
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="bg-blue-50 p-3 rounded-lg">
           <div className="flex items-center gap-2 mb-1">
-            <GitBranch className="w-4 h-4 text-green-600" />
-            <span className="text-sm font-medium">Vocab Reuses</span>
+            <TrendingUp className="w-4 h-4 text-blue-600" />
+            <span className="text-sm font-medium">Design Convergence</span>
           </div>
-          <span className="text-lg font-bold text-green-600">
-            {vocab.reusedByVocabularies || 0}
-          </span>
+          <div className="text-xs text-gray-600 space-y-1">
+            <div>Extends: {vocab.designData?.['extends'] || 0}</div>
+            <div>Equivalences: {vocab.designData?.hasEquivalencesWith || 0}</div>
+            <div>Dependencies: {vocab.designData?.reliesOn || 0}</div>
+          </div>
         </div>
-        <div className="bg-gray-50 p-3 rounded-lg">
+        <div className="bg-green-50 p-3 rounded-lg">
           <div className="flex items-center gap-2 mb-1">
-            <Database className="w-4 h-4 text-blue-600" />
-            <span className="text-sm font-medium">Dataset Uses</span>
+            <Database className="w-4 h-4 text-green-600" />
+            <span className="text-sm font-medium">Adoption Convergence</span>
           </div>
-          <span className="text-lg font-bold text-blue-600">
-            {vocab.reusedByDatasets || 0}
-          </span>
-        </div>
-        <div className="bg-gray-50 p-3 rounded-lg">
-          <div className="flex items-center gap-2 mb-1">
-            <Network className="w-4 h-4 text-purple-600" />
-            <span className="text-sm font-medium">Dependencies</span>
+          <div className="text-xs text-gray-600 space-y-1">
+            <div>Vocab Reuses: {vocab.adoptionData?.reusedByVocabularies || 0}</div>
+            <div>Dataset Uses: {vocab.adoptionData?.reusedByDatasets || 0}</div>
+            <div>Occurrences: {parseInt(vocab.adoptionData?.occurrencesInDatasets || 0).toLocaleString()}</div>
           </div>
-          <span className="text-lg font-bold text-purple-600">
-            {vocab.dependencies?.length || 0}
-          </span>
         </div>
       </div>
 
@@ -250,26 +276,33 @@ export default function App() {
 
       // Step 2: Get connectivity data
       const vocabularyUris = lovResults.map(result => result.uri).filter(Boolean);
-      const [connectivityData, dependencyData] = await Promise.all([
-        getConnectivityData(vocabularyUris),
-        getDependencyData(vocabularyUris)
+      const [adoptionData, designData] = await Promise.all([
+        getAdoptionConvergenceData(vocabularyUris),
+        getDesignConvergenceData(vocabularyUris)
       ]);
 
-      // Step 3: Merge data AND calculate scores once
+      // Step 3: Merge data and calculate scores
       const enhancedResults = lovResults.map(result => {
-        const mergedData = {
-          ...result,
-          ...connectivityData[result.uri],
-          ...dependencyData[result.uri]
+        const adoption = adoptionData[result.uri] || {
+          reusedByVocabularies: '0',
+          reusedByDatasets: '0',
+          occurrencesInDatasets: '0'
+        };
+        
+        const design = designData[result.uri] || {
+          'extends': 0, hasEquivalencesWith: 0, reliesOn: 0,
+          usedBy: 0, specializes: 0, generalizes: 0
         };
         
         return {
-          ...mergedData,
-          connectivityScore: calculateConnectivityScore(mergedData) // Calculate once here
+          ...result,
+          adoptionData: adoption,
+          designData: design,
+          connectivityScore: calculateConnectivityScore(adoption, design)
         };
       });
 
-      // Step 4: Sort using pre-calculated scores
+      // Step 4: Sort by connectivity score
       enhancedResults.sort((a, b) => b.connectivityScore - a.connectivityScore);
       
       setSearchResults(enhancedResults);
@@ -291,7 +324,7 @@ export default function App() {
             LOV Connectivity Search
           </h1>
           <p className="text-gray-600">
-            Search LOV vocabularies ranked by connectivity evidence for better interoperability
+            Search LOV vocabularies ranked by design and adoption convergence for better interoperability
           </p>
         </div>
 
@@ -322,11 +355,11 @@ export default function App() {
             <div className="flex items-start gap-3">
               <Info className="w-5 h-5 text-blue-600 mt-0.5" />
               <div className="text-sm text-blue-800">
-                <p className="font-medium mb-1">Evidence-Based Ranking</p>
+                <p className="font-medium mb-1">Updated Connectivity-Based Ranking</p>
                 <p>
-                  Results ranked by <strong>Design Convergence</strong> (70% - how many vocabulary experts reference this) 
-                  and <strong>Adoption Convergence</strong> (20% - real-world usage). 
-                  Higher scores indicate better interoperability potential.
+                  Results ranked by <strong>Design Convergence</strong> (60% - vocab-to-vocab connections: extends, equivalences, dependencies) 
+                  and <strong>Adoption Convergence</strong> (40% - actual usage evidence). 
+                  Higher scores indicate proven interoperability patterns.
                 </p>
               </div>
             </div>
